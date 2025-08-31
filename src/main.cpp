@@ -1,41 +1,62 @@
 #include <Arduino.h>
-#include "modules/buttons/Buttons.h"
-#include "modules/gps/GpsModule.h"
-#include "modules/oled/Oled.h"
-#include "modules/radio/LoRaWAN.h"
+#include "config.h"
+#include "modules/oled/DisplayManager.h"
+#include "modules/gps/GPSManager.h"
+#include "modules/Battery/PowerManager.h"
+#include "modules/radio/LoRaWANManager.h"
+#include "modules/Storage/StorageManager.h"
 
-class MainApp {
-    public:
-        static void start() {
-            // Jeder Task mit eigenem Namen, Stackgröße, Priorität, CPU
-            Buttons::start("Buttons", 4096, 1, APP_CPU_NUM);
-            Oled::start("OLED", 4096, 1, APP_CPU_NUM);
-            LoRaWAN::start("LoRaWAN", 4096, 1, PRO_CPU_NUM);
+DisplayManager display;
+GPSManager gps;
+PowerManager power;
+LoRaWANManager lora;
 
-            // GPS braucht eine Instanz
-            gps.begin();
-            gps.startTask("GPS", 4096, 1, PRO_CPU_NUM);
-        }
 
-        static GpsModule gps; // eine globale Instanz
-};
+unsigned long lastSend = 0;
 
-GpsModule MainApp::gps(Serial1, 9600);   // <-- Definition mit Konstruktor
 
 void setup() {
-    Serial.begin(115200);
-    delay(1000);
-    Serial.println("Starte MainApp...");
-    MainApp::start();
+Serial.begin(115200);
+delay(200);
+Serial.println("Tracker boot");
+
+
+Wire.begin();
+StorageManager::begin();
+
+
+display.begin();
+gps.begin();
+power.begin();
+lora.begin();
+
+
+display.renderStatus(false, 0, 0, 0, 99.9, 0);
+
+
+// try join (will attempt session restore first)
+int st = lora.join();
+Serial.print("Join result: "); Serial.println(st);
 }
 
+
 void loop() {
-    // optional: auf aktuelle Werte zugreifen
-    if (MainApp::gps.locationValid()) {
-        Serial.printf("Loop: Lat=%.6f, Lon=%.6f\n",
-                      MainApp::gps.latitude(),
-                      MainApp::gps.longitude());
-    }
-    delay(2000);
+  gps.update();
+  display.renderStatus(lora.isJoined(), (float)gps.lat(), (float)gps.lon(), gps.sats(), gps.hdop(), power.batteryPercent());
+
+
+  if (gps.hasFix() && millis() - lastSend > SEND_INTERVAL && lora.isJoined()) {
+    int32_t ilat = (int32_t)(gps.lat() * 1e6);
+    int32_t ilon = (int32_t)(gps.lon() * 1e6);
+    int16_t ialt = (int16_t)(gps.alt());
+    uint8_t payload[10];
+    memcpy(payload + 0, &ilat, 4);
+    memcpy(payload + 4, &ilon, 4);
+    memcpy(payload + 8, &ialt, 2);
+    int16_t res = lora.sendUplink(payload, 10, 1);
+    Serial.print("Uplink result: "); Serial.println(res);
+    lastSend = millis();
+  }
+
+  delay(200);
 }
- 
